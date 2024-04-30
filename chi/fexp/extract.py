@@ -16,8 +16,8 @@ def make_2d_extractor(fname):
 
 def make_3d_extractor(fname):
     extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
-    extractor.enableFeatureClassByName('shape2D', enabled=False)
     extractor.loadParams(fname)
+    extractor.enableFeatureClassByName('shape2D', enabled=False)
     return extractor
 
 class Processor:
@@ -63,8 +63,7 @@ def parse_confs(conf):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--conf', required=True, nargs='+')
-    #parser.add_argument("--conf3d", required=True)
-    #parser.add_argument("--conf2d", required=True)
+    parser.add_argument('--output', required=True, nargs='+')
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--jobs", default=1, type=int)
 
@@ -73,7 +72,6 @@ def main():
     table = pandas.read_csv(args.dataset, index_col=0)
 
     extractors = parse_confs(args.conf)
-    #extractors = {"2d": make_2d_extractor(args.conf2d), "3d": make_3d_extractor(args.conf3d)}
     processor = Processor(extractors)
 
     if args.jobs == 1:
