@@ -1,0 +1,12 @@
+imageType:
+  Original: {}
+
+setting:
+  binWidth: 25
+  resampledPixelSpacing: [1,1,1]
+  resegmentRange: [-250,250]
+  voxelArrayShift: 250
+  preCrop: true
+  correctMask: true
+  force2D: false
+
