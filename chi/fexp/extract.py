@@ -21,9 +21,14 @@ def make_3d_extractor(fname):
     return extractor
 
 class Processor:
-    def __init__(self, extractors, dataset_root=None):
+    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1):
         self.extractors = extractors
         self.dataset_root = dataset_root
+
+        self.image_column=image_column
+        self.mask_column=mask_column
+        self.label_column=label_column
+        self.default_label=default_label
 
     def get_path(self, p):
         if self.dataset_root is None:
@@ -33,11 +38,13 @@ class Processor:
 
     def process_row(self, row):
         index, row = row
-        im = row['Image']
-        msk = row['Mask']
+        im = row[self.image_column]
+        msk = row[self.mask_column]
+
+        label = row.get(self.label_column, self.default_label)
 
         im = sitk.ReadImage(self.get_path(im))
-        msk = sitk.ReadImage(self.get_path(msk))
+        msk = sitk.ReadImage(self.get_path(msk)) == label
 
         ress = {k: extractor.execute(im, msk) for k, extractor in self.extractors.items()}
 
@@ -89,6 +96,10 @@ def main():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--dataset_root", required=False, default=None)
     parser.add_argument("--jobs", default=1, type=int)
+    parser.add_argument("--image_column", default="Image")
+    parser.add_argument("--mask_column", default="Mask")
+    parser.add_argument("--label_column", default="MaskLabel")
+    parser.add_argument("--use_label", default=1, type=int)
 
     args = parser.parse_args()
 
@@ -96,7 +107,7 @@ def main():
 
     extractors = parse_confs(args.conf)
     outputs = dict(zip(args.conf, args.output))
-    processor = Processor(extractors, dataset_root=args.dataset_root)
+    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label)
 
     print("Time to load up:", tt.toc())
 
