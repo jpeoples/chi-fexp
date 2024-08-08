@@ -26,10 +26,16 @@ setting:
   resegmentRange: [0, 300] #Using guidance from previous paper that Amber is first author on
   preCrop: true
   correctMask: true
+  padDistance: 10
+
 
 # Image types to use: "Original" for unfiltered image, for possible filters, see documentation.
 imageType:
   Original: {} # for dictionaries / mappings, None values are not allowed, '{}' is interpreted as an empty dictionary
+  Wavelet: {}
+  LoG:
+    sigma: [1.0, 2.0, 3.0, 4.0, 5.0]
+
 
 # Featureclasses, from which features must be calculated. If a featureclass is not mentioned, no features are calculated
 # for that class. Otherwise, the specified features are calculated, or, if none are specified, all are calculated (excluding redundant/deprecated features).
