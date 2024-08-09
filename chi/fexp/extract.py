@@ -53,7 +53,7 @@ class Processor:
         msk = sitk.ReadImage(self.get_path(msk)) == label
 
         try:
-            ress = {k: extractor.loadImage(im, msk) for k, extractor in self.extractors.items()}
+            ress = {k: extractor.loadImage(im, msk, generalInfo=None, **extractor.settings.copy()) for k, extractor in self.extractors.items()}
         except:
             print("Error was in row", index, row)
             print("Image:", row[self.image_column])
