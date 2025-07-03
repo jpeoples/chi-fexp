@@ -20,8 +20,88 @@ def make_3d_extractor(fname):
     extractor.enableFeatureClassByName('shape2D', enabled=False)
     return extractor
 
+class Label:
+    @staticmethod
+    def mask_equals(msk, label):
+        return msk == label
+
+    @staticmethod
+    def mask_greaterthan(msk, label):
+        return msk > label
+
+    @staticmethod
+    def mask_lessthan(msk, label):
+        return msk < label
+
+    def __init__(self, label, rule, prefix):
+        self.label = label
+        self.rule = rule
+        self.prefix=prefix
+
+    def apply(self, msk):
+        return self.rule(msk, self.label)
+
+    @classmethod
+    def integer(cls, label):
+        return cls(label, cls.mask_equals, "")
+
+    @classmethod
+    def lessthan(cls, label):
+        return cls(label, cls.mask_lessthan, "lt")
+
+    @classmethod
+    def greaterthan(cls, label):
+        return cls(label, cls.mask_greaterthan, "gt")
+
+    def str(self, formatstr):
+        intpart = formatstr.format(self.label)
+        return self.prefix+intpart
+
+def read_single_label(label):
+    if label.startswith(">"):
+        return Label.greaterthan(int(label[1:]))
+    elif label.startswith("<"):
+        return Label.lessthan(int(label[1:]))
+    else:
+        return Label.integer(int(label))
+
+def read_label(label):
+    if isinstance(label, str):
+        if ',' in label:
+            labels = [read_single_label(x) for x in label.split(',')]
+        else:
+            labels = [read_single_label(label)]
+    else:
+        labels = [Label.integer(int(label))]
+
+
+    return labels
+
+def get_labels_as_mask(seg, labels):
+    assert len(labels) > 0
+    msk = labels[0].apply(seg) # Initialize mask with first label
+    for lab in labels[1:]:
+        msk += lab.apply(seg)
+
+    return msk
+
+def format_labels(labels, intformat=":02d", joiner='-'):
+    formatstr = f"{{{intformat}}}"
+
+    strs = [l.str(formatstr) for l in labels]
+    return joiner.join(strs)
+    
+
+def resample_mask_before_extraction(img, msk):
+    rif = sitk.ResampleImageFilter()
+    rif.SetReferenceImage(img)
+    rif.SetInterpolator(sitk.sitkNearestNeighbor)
+
+    return rif.Execute(msk)
+
+
 class Processor:
-    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None):
+    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None, resample_mask_before_extraction=False):
         self.extractors = extractors
         self.dataset_root = dataset_root
 
@@ -31,6 +111,8 @@ class Processor:
         self.default_label=default_label
         self.dump_preprocessed = dump_preprocessed
         self.dump_dir = dump_dir
+        self.resample_mask_before_extraction=resample_mask_before_extraction
+        
 
     def get_path(self, p):
         if self.dataset_root is None:
@@ -38,20 +120,30 @@ class Processor:
         else:
             return os.path.join(self.dataset_root, p)
 
-    def dump_process(self, row):
-        index, row = row
-        print(index, row[self.mask_column])
+    def read_image_and_mask(self, row):
         im = row[self.image_column]
         msk = row[self.mask_column]
         impath = im
         mskpath = msk
 
         label = row.get(self.label_column, self.default_label)
+        labels = read_label(label)
 
 
         im = sitk.ReadImage(self.get_path(im))
-        msk = sitk.ReadImage(self.get_path(msk)) == label
+        seg = sitk.ReadImage(self.get_path(msk))
+        msk = get_labels_as_mask(seg, labels)
 
+        return impath, mskpath, im, msk, labels
+
+    def dump_process(self, row):
+        index, row = row
+        print(index, row[self.mask_column])
+
+        impath, mskpath, im, msk, labels = self.read_image_and_mask(row)
+
+        if self.resample_mask_before_extraction:
+            msk = resample_mask_before_extraction(im, msk)
         try:
             ress = {k: extractor.loadImage(im, msk, generalInfo=None, **extractor.settings.copy()) for k, extractor in self.extractors.items()}
         except:
@@ -61,9 +153,10 @@ class Processor:
             raise
 
         result_rows = {}
+        label = row.get(self.label_column, self.default_label)
         for conf, (lim, lmsk) in ress.items():
             conf_name = os.path.basename(conf).replace(".yaml", "")
-            label_num = f"{label:02d}"
+            label_num = format_labels(labels)
             root = os.path.join(self.dump_dir, conf_name, label_num)
             imoutpath = os.path.join(root, impath)
             mskoutpath = os.path.join(root, mskpath)
@@ -87,14 +180,11 @@ class Processor:
             return self.dump_process(row)
         index, row = row
         print(index, row[self.mask_column])
-        im = row[self.image_column]
-        msk = row[self.mask_column]
 
-        label = row.get(self.label_column, self.default_label)
-
-
-        im = sitk.ReadImage(self.get_path(im))
-        msk = sitk.ReadImage(self.get_path(msk)) == label
+        impath, mskpath, im, msk, labels = self.read_image_and_mask(row)
+        print(impath, mskpath)
+        if self.resample_mask_before_extraction:
+            msk = resample_mask_before_extraction(im, msk)
 
         try:
             ress = {k: extractor.execute(im, msk) for k, extractor in self.extractors.items()}
@@ -147,7 +237,7 @@ class TicToc:
 
 def do_execute(args, ix, row):
     extractors = parse_confs(args.conf)
-    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir)
+    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction)
     return processor.process_row((ix, row))
 
 
@@ -168,10 +258,13 @@ def main():
     parser.add_argument("--use_label", default=1, type=int)
     parser.add_argument("--start", default=-1, type=int)
     parser.add_argument("--count", default=-1, type=int)
+    parser.add_argument("--resample_mask_before_extraction", action="store_true")
 
 
 
     args = parser.parse_args()
+    print(args.conf)
+    print(args.output)
 
     table = pandas.read_csv(args.dataset)
 
