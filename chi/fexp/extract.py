@@ -1,10 +1,10 @@
-import radiomics, radiomics.featureextractor
-import SimpleITK as sitk
-from tqdm import tqdm
-import pandas
+import argparse
 import os, os.path
 
-import argparse
+from joblib import Parallel, delayed
+import pandas
+import radiomics, radiomics.featureextractor
+import SimpleITK as sitk
 
 def make_2d_extractor(fname):
     extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
@@ -241,24 +241,37 @@ def do_execute(args, ix, row):
     return processor.process_row((ix, row))
 
 
-from joblib import Parallel, delayed
 def main():
     tt = TicToc()
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--conf', required=True, nargs='+')
-    parser.add_argument('--output', required=True, nargs='+')
-    parser.add_argument("--dataset", required=True)
-    parser.add_argument("--dataset_root", required=False, default=None)
-    parser.add_argument("--jobs", default=1, type=int)
-    parser.add_argument("--image_column", default="Image")
-    parser.add_argument("--mask_column", default="Mask")
-    parser.add_argument("--label_column", default="MaskLabel")
-    parser.add_argument("--dump_preprocessed", action='store_true')
-    parser.add_argument("--dump_dir")
-    parser.add_argument("--use_label", default=1, type=int)
-    parser.add_argument("--start", default=-1, type=int)
-    parser.add_argument("--count", default=-1, type=int)
-    parser.add_argument("--resample_mask_before_extraction", action="store_true")
+    parser = argparse.ArgumentParser(prog="python -m chi.fexp", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--conf', required=True, nargs='+',
+                        help="A list of pyradiomics yaml configuration files (can be 1)")
+    parser.add_argument('--output', required=True, nargs='+',
+                        help="A list of output feature csv files for each specified configuration")
+    parser.add_argument("--dataset", required=True,
+                        help="A csv file specifying the images, masks, and labels for feature extraction")
+    parser.add_argument("--dataset_root", required=False, default=None,
+                        help="The root directory of the dataset, to which all paths in the data set file are relative")
+    parser.add_argument("--jobs", default=1, type=int,
+                        help="The number of parallel jobs to use. Default is 1 (serial)")
+    parser.add_argument("--image_column", default="Image",
+                        help="The name of the column specifying the image files.")
+    parser.add_argument("--mask_column", default="Mask",
+                        help="The name of the column specifying the mask file paths.")
+    parser.add_argument("--label_column", default="MaskLabel",
+                        help="The name of the column specifying the label(s) to use.")
+    parser.add_argument("--dump_preprocessed", action='store_true',
+                        help="Trigger the program to output preprocessed images, rather than imaging features")
+    parser.add_argument("--dump_dir",
+                        help="When outputting preprocessed images, this specifies the root path for output.")
+    parser.add_argument("--use_label", default=1, type=int,
+                        help="If no label_column is present in the data set, this argument specifies the default label to use for all images")
+    parser.add_argument("--start", default=-1, type=int,
+                        help="Offset execution, processing the rows starting at the given index")
+    parser.add_argument("--count", default=-1, type=int,
+                        help="Limit execution to this number of rows, starting from the start index.")
+    parser.add_argument("--resample_mask_before_extraction", action="store_true",
+                        help="This prevents certain rare errors..")
 
 
 

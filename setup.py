@@ -31,7 +31,7 @@ setup(
     packages=find_namespace_packages(include=["chi.*"]), # Required
 
     python_requires='>=3.0',
-    install_requires=[], # List your dependencies here
+    install_requires=["SimpleITK", "pandas", "pyradiomics", "joblib"], # List your dependencies here
 
     # List additional groups of dependencies here (e.g. development
     # dependencies). Users will be able to install these using the "extras"
