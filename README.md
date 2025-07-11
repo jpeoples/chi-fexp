@@ -52,7 +52,7 @@ Notice that `<ROOT>` is not specified in the data set file. Instead, the paths a
 
 Suppose we have a pyradiomics config file called `config.yaml`. For more information on `pyradiomics` config files see the examples [here](https://github.com/AIM-Harvard/pyradiomics/tree/master/examples/exampleSettings), and the docs [here](https://pyradiomics.readthedocs.io/en/latest/customization.html#parameter-file)
 
-A few sample configurations are included in this repository as well: (here)[/chi/fexp/configs/].
+A few sample configurations are included in this repository as well: [here](/chi/fexp/configs/).
 
 To extract features:
 
