@@ -19,7 +19,7 @@ python -m pip install ./pyradiomics
 
 # Install chi-fexp
 git clone git@github.com:jpeoples/chi-fexp.git
-python -m pip install chi-fexp.git
+python -m pip install ./chi-fexp
 ```
 
 ## Getting started with `chi-fexp`
