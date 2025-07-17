@@ -188,11 +188,11 @@ class Processor:
 
         try:
             ress = {k: extractor.execute(im, msk) for k, extractor in self.extractors.items()}
-        except:
+        except Exception as e:
             print("Error was in row", index, row)
             print("Image:", row[self.image_column])
             print("Mask:", row[self.mask_column])
-            raise
+            raise RuntimeError(f"Error in row {index}, {row}. Image: {row[self.image_column]}, Mask: {row[self.mask_column]}") from e
 
         def add_to_row(x):
             dct = row.to_dict()
