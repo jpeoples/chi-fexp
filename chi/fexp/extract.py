@@ -6,6 +6,8 @@ import pandas
 import radiomics, radiomics.featureextractor
 import SimpleITK as sitk
 
+import numpy as np
+
 def make_2d_extractor(fname):
     extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
     extractor.loadParams(fname)
@@ -98,10 +100,66 @@ def resample_mask_before_extraction(img, msk):
     rif.SetInterpolator(sitk.sitkNearestNeighbor)
 
     return rif.Execute(msk)
+# Note: This antialiasing code is borrowed from med-imagetools resampling code!
+# https://github.com/bhklab/med-imagetools/blob/04bb636829a27489fa7a53e0dfb87c2e205b6619/src/imgtools/transforms/functional.py#L4
+
+def prep_image_for_resample(
+    image: sitk.Image,
+    spacing: float | list[float] | np.ndarray,
+    anti_alias_sigma: float | list[float] | None = None
+) -> sitk.Image:
+    """Resample an image to a new spacing with optional transform.
+
+    Resamples the input image using the specified spacing, computing a new
+    image size to maintain the original spatial extent unless explicitly set
+    via output_size. A transformation can be applied during resampling, and
+    Gaussian smoothing is used for anti-aliasing when downsampling.
+
+    Parameters
+    ----------
+    image : sitk.Image
+        The SimpleITK image to be resampled.
+    spacing : float | list[float] | np.ndarray
+        The desired spacing for each axis. A single float applies to all
+        dimensions, while a sequence specifies spacing per axis. Use 0 for any
+        axis to retain its original spacing.
+    anti_alias_sigma : float | list[float] | None, optional
+        The standard deviation for the Gaussian smoothing kernel. If not
+        provided, it is automatically computed.
+
+    Returns
+    -------
+    sitk.Image
+        The filtered image, ready for resample.
+    """
+
+    original_spacing = np.array(image.GetSpacing())
+
+    if isinstance(spacing, (float, int)):
+        new_spacing = np.repeat(spacing, len(original_spacing)).astype(
+            np.float64
+        )
+    else:
+        spacing = np.asarray(spacing)
+        new_spacing = np.where(spacing == 0, original_spacing, spacing)
+
+    downsample = new_spacing > original_spacing
+    if downsample.any():
+        if not anti_alias_sigma:
+            # sigma computation adapted from scikit-image
+            # https://github.com/scikit-image/scikit-image/blob/master/skimage/transform/_warps.py
+            anti_alias_sigma = list(
+                np.maximum(1e-11, (original_spacing / new_spacing - 1) / 2)
+            )
+        sigma = np.where(downsample, anti_alias_sigma, 1e-11)
+        image = sitk.SmoothingRecursiveGaussian(image, sigma)
+
+
+    return image
 
 
 class Processor:
-    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None, resample_mask_before_extraction=False):
+    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None, resample_mask_before_extraction=False, skip_errors=False, use_antialiasing=False):
         self.extractors = extractors
         self.dataset_root = dataset_root
 
@@ -112,6 +170,8 @@ class Processor:
         self.dump_preprocessed = dump_preprocessed
         self.dump_dir = dump_dir
         self.resample_mask_before_extraction=resample_mask_before_extraction
+        self.skip_errors = skip_errors
+        self.use_antialiasing = use_antialiasing
         
 
     def get_path(self, p):
@@ -142,15 +202,27 @@ class Processor:
 
         impath, mskpath, im, msk, labels = self.read_image_and_mask(row)
 
-        if self.resample_mask_before_extraction:
-            msk = resample_mask_before_extraction(im, msk)
         try:
-            ress = {k: extractor.loadImage(im, msk, generalInfo=None, **extractor.settings.copy()) for k, extractor in self.extractors.items()}
+            ress = {k: self.execute_extraction(im, msk, extractor, lambda i, m: extractor.loadImage(i, m, generalInfo=None, **extractor.settings.copy())) for k, extractor in self.extractors.items()}
         except:
             print("Error was in row", index, row)
             print("Image:", row[self.image_column])
             print("Mask:", row[self.mask_column])
-            raise
+            if not self.skip_errors:
+                raise
+            else:
+                return
+
+        def make_unique(patha, pathb):
+            name = os.path.basename(patha).replace(".nii.gz", "")
+            dir = os.path.dirname(patha)
+            nameb = os.path.basename(pathb).replace(".nii.gz", "")
+            nameo = "_".join(name, nameb)
+            proposed = os.path.join(dir, nameo)
+            assert not os.path.exists(proposed)
+            return proposed
+
+
 
         result_rows = {}
         label = row.get(self.label_column, self.default_label)
@@ -158,10 +230,13 @@ class Processor:
             conf_name = os.path.basename(conf).replace(".yaml", "")
             label_num = format_labels(labels)
             root = os.path.join(self.dump_dir, conf_name, label_num)
-            imoutpath = os.path.join(root, impath)
-            mskoutpath = os.path.join(root, mskpath)
+            newimpath = f"img_{index:05d}.nii.gz"
+            newmskpath = f"msk_{index:05d}.nii.gz"
+            imoutpath = os.path.join(root, newimpath)
+            mskoutpath = os.path.join(root, newmskpath)
             os.makedirs(os.path.dirname(imoutpath), exist_ok=True)
             os.makedirs(os.path.dirname(mskoutpath), exist_ok=True)
+            print("saving", imoutpath, mskoutpath)
             sitk.WriteImage(lim, imoutpath)
             sitk.WriteImage(lmsk, mskoutpath)
 
@@ -175,6 +250,18 @@ class Processor:
 
         return index, result_rows
 
+    def execute_extraction(self, im, msk, extractor, extractor_method):
+        if self.use_antialiasing:
+            target_spacing = extractor.settings['resampledPixelSpacing']
+            current_spacing = im.GetSpacing()
+            actual_target = np.where(target_spacing, target_spacing, current_spacing)
+            im = prep_image_for_resample(im, actual_target)
+
+        if self.resample_mask_before_extraction:
+            msk = resample_mask_before_extraction(im, msk)
+
+        return extractor_method(im, msk)
+
     def process_row(self, row):
         if self.dump_preprocessed:
             return self.dump_process(row)
@@ -182,17 +269,19 @@ class Processor:
         print(index, row[self.mask_column])
 
         impath, mskpath, im, msk, labels = self.read_image_and_mask(row)
-        print(impath, mskpath)
-        if self.resample_mask_before_extraction:
-            msk = resample_mask_before_extraction(im, msk)
 
         try:
-            ress = {k: extractor.execute(im, msk) for k, extractor in self.extractors.items()}
+            ress = {k: self.execute_extraction(im, msk, extractor, extractor.execute) for k, extractor in self.extractors.items()}
         except Exception as e:
             print("Error was in row", index, row)
             print("Image:", row[self.image_column])
             print("Mask:", row[self.mask_column])
-            raise RuntimeError(f"Error in row {index}, {row}. Image: {row[self.image_column]}, Mask: {row[self.mask_column]}") from e
+            if not self.skip_errors:
+                raise RuntimeError(f"Error in row {index}, {row}. Image: {row[self.image_column]}, Mask: {row[self.mask_column]}") from e
+            else:
+                import traceback
+                traceback.print_exc()
+                return index, None
 
         def add_to_row(x):
             dct = row.to_dict()
@@ -207,6 +296,8 @@ class Processor:
     def tabulate_results(results):
         output = {}
         for index, ress in results:
+            if ress is None:
+                continue
             for extractor, features in ress.items():
                 output.setdefault(extractor, {})[index] = features
 
@@ -237,7 +328,7 @@ class TicToc:
 
 def do_execute(args, ix, row):
     extractors = parse_confs(args.conf)
-    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction)
+    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction, skip_errors=args.skip_errors, use_antialiasing=args.use_antialiasing)
     return processor.process_row((ix, row))
 
 
@@ -272,6 +363,10 @@ def main():
                         help="Limit execution to this number of rows, starting from the start index.")
     parser.add_argument("--resample_mask_before_extraction", action="store_true",
                         help="This prevents certain rare errors..")
+    parser.add_argument("--skip_errors", action="store_true",
+                        help="Skip (and log) errors.")
+    parser.add_argument("--use_antialiasing", action="store_true",
+                        help="Use antialiasing when downsampling")
 
 
 
