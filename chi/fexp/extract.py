@@ -8,18 +8,18 @@ import SimpleITK as sitk
 
 import numpy as np
 
-def make_2d_extractor(fname):
-    extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
-    extractor.loadParams(fname)
-
-    extractor.enableFeatureClassByName('shape2D', enabled=False)
-    extractor.enableFeatureClassByName('shape', enabled=False)
-    return extractor
+#def make_2d_extractor(fname):
+#    extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
+#    extractor.loadParams(fname)
+#
+#    extractor.enableFeatureClassByName('shape2D', enabled=False)
+#    extractor.enableFeatureClassByName('shape', enabled=False)
+#    return extractor
 
 def make_3d_extractor(fname):
     extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
-    extractor.loadParams(fname)
     extractor.enableFeatureClassByName('shape2D', enabled=False)
+    extractor.loadParams(fname)
     return extractor
 
 class Label:
@@ -159,7 +159,7 @@ def prep_image_for_resample(
 
 
 class Processor:
-    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None, resample_mask_before_extraction=False, skip_errors=False, use_antialiasing=False):
+    def __init__(self, extractors, dataset_root=None, image_column="Image", mask_column="Mask", label_column="MaskLabel", default_label=1, dump_preprocessed=False, dump_dir=None, resample_mask_before_extraction=False, skip_errors=False, use_antialiasing=False, extract_2d=False, slice_column='slice'):
         self.extractors = extractors
         self.dataset_root = dataset_root
 
@@ -172,6 +172,8 @@ class Processor:
         self.resample_mask_before_extraction=resample_mask_before_extraction
         self.skip_errors = skip_errors
         self.use_antialiasing = use_antialiasing
+        self.extract_2d = extract_2d
+        self.slice_column = slice_column
         
 
     def get_path(self, p):
@@ -262,6 +264,42 @@ class Processor:
 
         return extractor_method(im, msk)
 
+    def process_chunk_2d(self, imp, mskp, rows):
+        # Get image and mask
+        tmp = {self.image_column: imp, self.mask_column: mskp}
+        impath, mskpath, im, msk, labels = self.read_image_and_mask(tmp)
+
+        all_results = {}
+        for index, row in rows.iterrows():
+            sl = row[self.slice_column]
+            slim = im[:,:,sl]
+            slmsk = msk[:,:,sl]
+            try:
+                ress = {k: self.execute_extraction(slim, slmsk, extractor, extractor.execute) for k, extractor in self.extractors.items()}
+            except Exception as e:
+                print("Error was in row", index, row)
+                print("Image:", row[self.image_column])
+                print("Mask:", row[self.mask_column])
+                if not self.skip_errors:
+                    raise RuntimeError(f"Error in row {index}, {row}. Image: {row[self.image_column]}, Mask: {row[self.mask_column]}") from e
+                else:
+                    import traceback
+                    traceback.print_exc()
+                    all_results[index] = None
+
+            def add_to_row(x):
+                dct = row.to_dict()
+                dct.update(x)
+                return dct
+
+            ress = {k: add_to_row(r) for k, r in ress.items()}
+
+            all_results[index] = ress
+        return all_results
+
+
+
+
     def process_row(self, row):
         if self.dump_preprocessed:
             return self.dump_process(row)
@@ -305,6 +343,20 @@ class Processor:
 
         return output
 
+    @staticmethod
+    def tabulate_results_2d(results):
+        all_results = {k:v for r in results for k,v in r.items()}
+        output = {}
+        for index, ress in all_results.items():
+            if ress is None:
+                continue
+            for extractor, features in ress.items():
+                output.setdefault(extractor, {})[index] = features
+
+        output = {k: pandas.DataFrame.from_dict(v, orient='index') for k, v in output.items()}
+
+        return output
+
 def parse_confs(conf):
     cases = {}
     for c in conf:
@@ -328,9 +380,15 @@ class TicToc:
 
 def do_execute(args, ix, row):
     extractors = parse_confs(args.conf)
-    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction, skip_errors=args.skip_errors, use_antialiasing=args.use_antialiasing)
+    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction, skip_errors=args.skip_errors, use_antialiasing=args.use_antialiasing,
+                          extract_2d=args.extract_2d, slice_column=args.slice_column)
     return processor.process_row((ix, row))
 
+def do_execute_2d(args, imp, mskp, rows):
+    extractors = parse_confs(args.conf)
+    processor = Processor(extractors, dataset_root=args.dataset_root, image_column=args.image_column, mask_column=args.mask_column, label_column=args.label_column, default_label=args.use_label, dump_preprocessed=args.dump_preprocessed, dump_dir=args.dump_dir, resample_mask_before_extraction=args.resample_mask_before_extraction, skip_errors=args.skip_errors, use_antialiasing=args.use_antialiasing,
+                          extract_2d=args.extract_2d, slice_column=args.slice_column)
+    return processor.process_chunk_2d(imp, mskp, rows)
 
 def main():
     tt = TicToc()
@@ -367,6 +425,10 @@ def main():
                         help="Skip (and log) errors.")
     parser.add_argument("--use_antialiasing", action="store_true",
                         help="Use antialiasing when downsampling")
+    parser.add_argument("--extract_2d", action="store_true",
+                        help="2D extraction mode")
+    parser.add_argument("--slice_column", default='slice',
+                        help="slice to consider for slice index in 2D mode.")
 
 
 
@@ -396,10 +458,14 @@ def main():
 
     
 
-    results = Parallel(n_jobs=args.jobs, verbose=10)(delayed(do_execute)(args, ix, row) for ix, row in table.iterrows())
-    print("Merging results")
-    results = Processor.tabulate_results(results)
-
+    if not args.extract_2d:
+        results = Parallel(n_jobs=args.jobs, verbose=10)(delayed(do_execute)(args, ix, row) for ix, row in table.iterrows())
+        print("Merging results")
+        results = Processor.tabulate_results(results)
+    else:
+        results = Parallel(n_jobs=args.jobs, verbose=10)(delayed(do_execute_2d)(args, imp, mskp, rows) for (imp, mskp), rows in table.groupby([args.image_column, args.mask_column]))
+        print("Merging results")
+        results = Processor.tabulate_results_2d(results)
     #if args.jobs == 1:
     #    results = processor.tabulate_results(map(processor.process_row, tqdm(table.iterrows(), total=table.shape[0])))
     #else:
