@@ -8,6 +8,8 @@ import SimpleITK as sitk
 
 import numpy as np
 
+from .tda import TDAExtractor
+
 #def make_2d_extractor(fname):
 #    extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
 #    extractor.loadParams(fname)
@@ -16,7 +18,18 @@ import numpy as np
 #    extractor.enableFeatureClassByName('shape', enabled=False)
 #    return extractor
 
+def _maybe_tda_extractor(fname):
+    from ruamel.yaml import YAML
+    with open(fname) as f:
+        conf = YAML().load(f)
+    print(conf)
+    if conf.get("TDA") is not None:
+        return TDAExtractor(conf)
+
 def make_3d_extractor(fname):
+    extractor = _maybe_tda_extractor(fname)
+    if extractor is not None:
+        return extractor
     extractor = radiomics.featureextractor.RadiomicsFeatureExtractor()
     extractor.enableFeatureClassByName('shape2D', enabled=False)
     extractor.loadParams(fname)
